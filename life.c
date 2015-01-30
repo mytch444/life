@@ -17,9 +17,11 @@ void render();
 void lock();
 void unlock();
 
-void addrandom(int n);
 int neighbours(int i);
 int reproduce(int i);
+
+void addblock(int i, int w);
+void addrandom(int n);
 
 void key(XEvent *event);
 void buttonpress(XEvent *event);
@@ -68,6 +70,23 @@ void addrandom(int n) {
 		r = rand() % (width * height);	
 		points[r] = 1000;
 	}
+}
+
+void addblock(int i, int w) {
+	int xx, yy;
+	lock();
+
+	for (xx = -w / 2; xx < w / 2; xx++) {
+		for (yy = -w / 2; yy < w / 2; yy++) {
+			if (i % width + xx < 0 || i % width + xx >= width
+					|| i / width + yy < 0 || i / width + yy >= height)
+				continue;
+			buffer[i + xx + yy * width] = points[i + xx + yy * width] 
+				= 1000;
+		}
+	}
+
+	unlock();
 }
 
 int neighbours(int i) {
@@ -151,7 +170,14 @@ void key(XEvent *event) {
 }
 
 void buttonpress(XEvent *event) {
-	buttonpressed = 1;
+	XButtonEvent ev = event->xbutton;
+	if (ev.button == Button1)
+		buttonpressed = 1;
+	else if (ev.button == Button3)
+		buttonpressed = 10;
+
+	if (buttonpressed)
+		addblock(ev.x / boxwidth + ev.y / boxheight * width, buttonpressed);
 }
 
 void buttonrelease(XEvent *event) {
@@ -162,21 +188,13 @@ void motionnotify(XEvent *event) {
 	XMotionEvent ev = event->xmotion;
 
 	if (!buttonpressed) return;
-
-	int x = ev.x / boxwidth;
-	int y = ev.y / boxheight;
-	int i = x + y * width;
-
-	lock();
-	buffer[x + y * width] = 1000;
-	points[x + y * width] = 1000;
-	unlock();
+	addblock(ev.x / boxwidth + ev.y / boxheight * width, buttonpressed);
 }
 
 void configurenotify(XEvent *event) {
 	XConfigureEvent ev = event->xconfigure;
 	printf("Resize\n");
-	
+
 	boxwidth = ev.width / width;
 	boxheight = ev.height / height;
 }
@@ -221,11 +239,11 @@ int main(int argc, char *argv[]) {
 	pthread_t pth;
 	XEvent event;
 	int pending, i, random;
-	
+
 	width = 25;
 	height = 25;
 	delay = 1000 * 1000;
-	
+
 	random = 100;
 
 	buttonpressed = 0;
