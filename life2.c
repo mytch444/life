@@ -2,26 +2,39 @@
 #include <string.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <math.h>
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
 #include <X11/keysym.h>
 
 #define LOCK_DELAY 100
 
+typedef struct Cell Cell;
+
+struct Cell {
+	int x, y;
+	int color;
+
+	int dying;
+	Cell *next;
+};
+
 void setupwindow();
 void update();
-void updateloop();
 void setcolor(int color);
 void render();
 
-void lock();
-void unlock();
+void addcell(Cell *addto, Cell *n);
 
-int neighbours(int i);
-int reproduce(int i);
+Cell *neighbours(Cell *c);
+int nneighbours(Cell *c);
+Cell *reproduce(Cell *c);
 
-void addblock(int i, int w);
-void addrandom(int n);
+int placetaken(Cell *cells, Cell *c);
+
+Cell *newcell(int x, int y);
+
+Cell *copycell(Cell *c);
 
 void key(XEvent *event);
 void buttonpress(XEvent *event);
@@ -35,7 +48,7 @@ int locked;
 
 int delay;
 int width, height;
-int *points, *buffer;
+Cell *cells;
 
 int buttonpressed;
 
@@ -54,75 +67,132 @@ void (*handlers[LASTEvent])(XEvent *e) = {
 	[MotionNotify] = motionnotify,
 };
 
-void lock() {
-	while (locked) 
-		usleep(LOCK_DELAY);
-	locked = 1;
-}
+Cell *neighbours(Cell *c) {
+	int xd, yd;
+	Cell *o, *n, *neighbour;
 
-void unlock() {
-	locked = 0;
-}
-
-void addrandom(int n) {
-	int r;
-	while (--n >= 0) {
-		r = rand() % (width * height);	
-		points[r] = 1000;
+	neighbour = n = NULL;
+	for (o = cells->next; o; o = o->next) {
+		if (o != c) {
+			xd = o->x - c->x;
+			yd = o->y - c->y;
+			if ((int) sqrt(xd * xd + yd * yd) == 1) {
+				if (!n) {
+					neighbour = n = copycell(o);
+				} else {
+					n->next = copycell(o);
+					n = n->next;
+				}
+			}
+		}
 	}
+
+	return neighbour;
 }
 
-void addblock(int i, int w) {
-	int xx, yy;
-	
-	lock();
-	for (xx = -w / 2; xx <= w / 2; xx++)
-		for (yy = -w / 2; yy <= w / 2; yy++)
-			if (!(i % width + xx < 0 || i % width + xx >= width
-					|| i / width + yy < 0 || i / width + yy >= height))
-				buffer[i + xx + yy * width] = points[i + xx + yy * width] 
-					= 1000;
-	unlock();
-}
+int nneighbours(Cell *c) {
+	Cell *p, *o = neighbours(c);
+	int n = 0;	
+	while (o) {
+		p = o;
+		o = o->next;
+		free(p);
+		n++;
+	}
 
-int neighbours(int i) {
-	int x, y, n = 0;
-	for (x = -1; x <= 1; x++)
-		for (y = -1; y <= 1; y += 1)
-			if (!(x == 0 && y == 0) 
-					&& !(i % width + x < 0 || i % width + x >= width)
-					&& !(i / width + y < 0 || i / width + y >= height)
-					&& points[i + x + y * width])
-				n++;
 	return n;
 }
 
-int reproduce(int i) {
-	return 1000;
+int placetaken(Cell *cells, Cell *c) {
+	Cell *o;
+	if (c->x < 0 || c->x >= width || c->y < 0 || c->y >= height) return 1;
+	for (o = cells; o; o = o->next)
+		if (o != c && o->x == c->x && o->y == c->y)
+			return 1;
+	return 0;
+}
+
+Cell *reproduce(Cell *c) {
+	Cell *o, *mate, *nn, *new;
+	float a, i, ca, sa;
+
+	nn = neighbours(c);
+	if (!nn)
+		return NULL;
+
+	// Find mate from neighbours.
+	for (mate = o = nn; o; o = o->next)
+		if (o->color > mate->color)
+			mate = o;
+
+	c = copycell(c);
+	c->next = nn;
+	nn = c;
+
+	new = malloc(sizeof(Cell));
+	new->color = (mate->color + c->color) / 2 + rand() % 100 - 50;
+	new->x = c->x;
+	new->y = c->y;
+	new->dying = 0;
+	new->next = NULL;
+
+	i = 0;
+	while (placetaken(nn, new)) {
+		a = (rand() % 9) * (6.28f / 9.0f);
+		ca = cos(a); sa = sin(a);
+
+		new->x = c->x + (int) (ca > 0 ? ceil(ca) : -ceil(-ca));
+		new->y = c->y + (int) (sa > 0 ? ceil(sa) : -ceil(-sa));
+		
+		if (i++ > 18)
+			return NULL;
+	}
+
+	o = nn;
+	while (o) {
+		nn = o;
+		o = o->next;
+		free(nn);
+	}
+
+	return new;
 }
 
 void update() {
-	int i, n;
-	for (i = 0; i < width * height; i++) {
-		n = neighbours(i);
-		if (points[i] && (n < 2 || n > 3))
-			buffer[i] = 0;
-		else if (!points[i] && n == 3)
-			buffer[i] = reproduce(i); 
+	Cell *c, *prev, *new = malloc(sizeof(Cell));
+	new->next = NULL;
+	int n;
+	for (c = cells->next; c; c = c->next) {
+		n = nneighbours(c);
+
+		if (n < 1 || n > 3)
+			c->dying = 1;
+
+		// If one or more neighbours try to reproduce.
+		if (n >= 1) {
+			if (new)
+				addcell(new, reproduce(c));
+			else
+				new = reproduce(c);
+		} 
 	}
 
-	points = memcpy(points, buffer, sizeof(int) * width * height);
-}
-
-void updateloop() {
-	while (!quit) {
-		usleep(delay);
-		if (paused) continue;
-
-		lock();
-		update();
-		unlock();
+	// Remove the dead.
+	prev = cells;
+	c = cells->next;
+	while (c) {
+		if (c->dying) {
+			prev->next = c->next;
+			free(c);
+			c = prev;
+		}
+		prev = c;
+		c = c->next;
 	}
+
+	// Add the new.
+	prev->next = new->next;
+	free(new);
 }
 
 void setcolor(int color) {
@@ -132,16 +202,17 @@ void setcolor(int color) {
 }
 
 void render() {
-	int x, y;
-	lock();
-	for (x = 0; x < width; x++) {
-		for (y = 0; y < height; y++) {
-			setcolor(points[x + y * width]);
-			XFillRectangle(display, win, gc, x * boxwidth, y * boxheight,
-					boxwidth, boxheight);
-		}
+	Cell *c;
+	
+	setcolor(0);
+	XFillRectangle(display, win, gc, 0, 0, 
+			width * boxwidth, height * boxheight);
+
+	for (c = cells->next; c; c = c->next) {
+		setcolor(c->color);
+		XFillRectangle(display, win, gc, c->x * boxwidth, c->y * boxheight,
+				boxwidth, boxheight);
 	}
-	unlock();
 }
 
 void key(XEvent *event) {
@@ -165,15 +236,48 @@ void key(XEvent *event) {
 	}
 }
 
+void addcell(Cell *addto, Cell *n) {
+	Cell *c;
+	for (c = addto; c && c->next; c = c->next) ;
+	c->next = n;
+}
+
+Cell *newcell(int x, int y) {
+	Cell *n = malloc(sizeof(Cell));
+
+	n->x = x;
+	n->y = y;
+	n->color = 1000;
+	n->dying = 0;
+	n->next = NULL;
+
+	return n;
+}
+
+Cell *copycell(Cell *c) {
+	Cell *n = malloc(sizeof(Cell));
+	n->x = c->x;
+	n->y = c->y;
+	n->dying = c->dying;
+	n->next = NULL;
+	return n;
+}
+
 void buttonpress(XEvent *event) {
 	XButtonEvent ev = event->xbutton;
+	Cell *c;
 	if (ev.button == Button1)
 		buttonpressed = 1;
 	else if (ev.button == Button3)
 		buttonpressed = 10;
 
-	if (buttonpressed)
-		addblock(ev.x / boxwidth + ev.y / boxheight * width, buttonpressed);
+	if (buttonpressed) {
+		c = newcell(ev.x / boxwidth, ev.y / boxheight);
+		if (placetaken(cells, c)) 
+			free(c);
+		else 
+			addcell(cells, c);
+	}
 }
 
 void buttonrelease(XEvent *event) {
@@ -184,7 +288,11 @@ void motionnotify(XEvent *event) {
 	XMotionEvent ev = event->xmotion;
 
 	if (!buttonpressed) return;
-	addblock(ev.x / boxwidth + ev.y / boxheight * width, buttonpressed);
+	Cell *c = newcell(ev.x / boxwidth, ev.y / boxheight);
+	if (placetaken(cells, c)) 
+		free(c);
+	else 
+		addcell(cells, c);
 }
 
 void configurenotify(XEvent *event) {
@@ -232,7 +340,6 @@ void usage(char *cmd) {
 }
 
 int main(int argc, char *argv[]) {
-	pthread_t pth;
 	XEvent event;
 	int pending, i, random;
 
@@ -240,7 +347,10 @@ int main(int argc, char *argv[]) {
 	height = 25;
 	delay = 1000 * 1000;
 
-	random = 100;
+	cells = malloc(sizeof(Cell));
+	cells->next = NULL;
+	cells->x = -100;
+	cells->y = -100;
 
 	buttonpressed = 0;
 	paused = 0;
@@ -252,8 +362,6 @@ int main(int argc, char *argv[]) {
 			height = atoi(argv[++i]);
 		} else if (strcmp(argv[i], "-d") == 0) {
 			delay = atoi(argv[++i]) * 1000;
-		} else if (strcmp(argv[i], "-r") == 0) {
-			random = atoi(argv[++i]);
 		} else if (strcmp(argv[i], "-p") == 0) {
 			paused = 1;
 		} else if (strcmp(argv[i], "--help") == 0) {
@@ -266,26 +374,14 @@ int main(int argc, char *argv[]) {
 		}
 	}
 
-	printf("-1 / 2 = %i\n 1 / 2 = %i\n", -1 / 2, 1 / 2);
-
 	boxwidth = boxheight = 20;
-
-	points = malloc(sizeof(int) * (width * height));
-	if (random)
-		addrandom(random);
-	buffer = malloc(sizeof(int) * (width * height));
-	buffer = memcpy(buffer, points, sizeof(int) * width * height);
 
 	setupwindow();
 
 	printf("Starting\n");
 
-	locked = 0;
 	quit = 0;
-	pthread_create(&pth, NULL, updateloop, "updater");
-	while (!quit) {
-		render();
-
+	for (i = 0; !quit; i++) {
 		pending = XPending(display);
 		if (!pending) {
 			usleep(delay / 100);
@@ -293,12 +389,14 @@ int main(int argc, char *argv[]) {
 			XNextEvent(display, &event);
 			if (handlers[event.type])
 				handlers[event.type](&event);
-		}
+		}	
+	
+		if (!paused && i % 100 == 0)
+			update();
+		render();
 	}
 
 	printf("Exiting\n");
-
-	pthread_cancel(pth);
 
 	return 0;
 }

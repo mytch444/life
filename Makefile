@@ -1,9 +1,11 @@
-EXEC=life
-
-all: life
+all: life life2
 
 life: life.c
-	gcc -o ${EXEC} life.c -lX11 -lpthread
+	gcc -o life life.c -lX11 -lpthread
+
+life2: life2.c
+	gcc -o life2 life2.c -lX11 -lm
 
 clean:
-	rm ${EXEC}
+	rm life
+	rm life2
