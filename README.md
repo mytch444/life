@@ -13,3 +13,6 @@ Run make to compile.
 
 Then for fun run *./life -r 10000 -w 230 -h 210 -d 20 -p* make the window full
 size then press p.
+
+life2 is basically me messing around with life and changing the rules. Plus a 
+different way of representing the cells (linked list rather than array).
